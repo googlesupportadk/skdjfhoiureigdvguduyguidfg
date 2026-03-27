@@ -1,0 +1,203 @@
+apply plugin: 'com.android.application'
+apply plugin: 'stringfog'
+
+//apply from:'aab_res_proguard.gradle'
+
+stringfog {
+    enable true
+    debug false
+    implementation 'com.github.megatronking.stringfog.xor.StringFogImpl'
+}
+
+android {
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.doow.rubbish"
+        minSdk 21
+        targetSdk 35
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+            shrinkResources false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    buildFeatures {
+        buildConfig = true
+    }
+
+    namespace "com.doow.rubbish"
+    buildToolsVersion '33.0.2'
+}
+
+// ========== 适配Gradle 8.5的核心配置（已修复） ==========
+// 1. 先定义一个任务，仅编译RubbishCode（排除Android依赖）
+task compileRubbishCode(type: JavaCompile) {
+    // 关键修复：仅编译RubbishCode.java，排除其他Android文件
+    source = file("${projectDir}/src/main/java/com/doow/rubbish/RubbishCode.java")
+    // 指定编译输出目录（单独目录，避免和Android代码混编）
+    destinationDir = file("${buildDir}/classes/rubbishCode")
+    // 指定JDK版本（与项目一致）
+    sourceCompatibility = JavaVersion.VERSION_17.toString()
+    targetCompatibility = JavaVersion.VERSION_17.toString()
+    // 仅依赖JDK，排除Android所有依赖（关键）
+    classpath = project.files(System.getProperty("java.home") + "/lib/rt.jar")
+}
+
+// 2. 运行RubbishCode（仅用纯JDK类路径，适配Gradle 8.5）
+task runRubbishCode(type: JavaExec, group: 'Custom', description: 'Run RubbishCode generator') {
+    // Gradle 8.5强制要求mainClass（完整类名）
+    mainClass = 'com.doow.rubbish.RubbishCode'
+    // 仅使用编译后的RubbishCode类文件（排除Android依赖）
+    classpath = files("${buildDir}/classes/rubbishCode")
+    // 工作目录：项目根目录（与原有逻辑一致）
+    workingDir = project.rootDir
+    // 指定JDK路径（替换为你的AS JBR路径，或系统JDK路径）
+    executable = file('D:/Android Studio/jbr/bin/java.exe')
+    // 编码配置（解决中文乱码）
+    systemProperty 'file.encoding', 'UTF-8'
+    // 依赖编译任务（确保先编译再运行）
+    dependsOn compileRubbishCode
+}
+
+// ========== 代码生成器任务 ==========
+task compileGeneratorLauncher(type: JavaCompile) {
+    source = fileTree(dir: "${projectDir}/src/main/java/com/doow/rubbish/generator", include: '**/*.java')
+    destinationDir = file("${buildDir}/classes/generatorLauncher")
+    sourceCompatibility = JavaVersion.VERSION_17.toString()
+    targetCompatibility = JavaVersion.VERSION_17.toString()
+
+    // 显式指定 Android SDK 路径
+    def androidSdkPath = "D:/SDK/Sdk"
+    def androidJar = new File("${androidSdkPath}/platforms/android-35/android.jar")
+
+    // 添加调试信息
+    doFirst {
+        println "Android SDK Path: ${androidSdkPath}"
+        println "Android JAR: ${androidJar.absolutePath}"
+        println "Android JAR exists: ${androidJar.exists()}"
+        println "Classpath: ${classpath.asPath}"
+    }
+
+    classpath = files(androidJar)
+}
+
+// 运行代码生成器
+task runCodeGeneratorLauncher(type: JavaExec, group: 'Custom', description: 'Run code generator') {
+    // Gradle 8.5强制要求mainClass（完整类名）
+    mainClass.set('com.doow.rubbish.generator.GeneratorLauncher')
+    // 使用编译后的类文件 + Android SDK
+    def androidSdkPath = "D:/SDK/Sdk"
+    def androidJar = new File("${androidSdkPath}/platforms/android-35/android.jar")
+    classpath = files("${buildDir}/classes/generatorLauncher", androidJar)
+    // 工作目录：项目根目录
+    workingDir = project.rootDir
+    // 指定JDK路径（与runRubbishCode任务一致）
+    javaLauncher.set(javaToolchains.launcherFor {
+        languageVersion.set(JavaLanguageVersion.of(17))
+    })
+    // 编码配置（解决中文乱码）
+    systemProperty 'file.encoding', 'UTF-8'
+    // 依赖编译任务（确保先编译再运行）
+    dependsOn compileGeneratorLauncher
+}
+
+
+
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.github.megatronking.stringfog:xor:5.0.0'
+}
+
+//替换drawable和layout下面的文件名
+task renameLayoutsAndDrawables {
+    doLast {
+        def run = false; // 打包的时候再开启，不然每次调试构建都会执行
+        if (run) {
+            def layoutDir = file("${projectDir}/src/main/res/layout")
+            def drawableDir = file("${projectDir}/src/main/res/drawable")
+            def javaDir = file("${projectDir}/src/main/java")
+            def random = new Random()
+
+            // 遍历布局文件
+            layoutDir.eachFile { file ->
+                if (file.isFile() && file.name.endsWith(".xml")) {
+                    def newLayoutFileName = "l${UUID.randomUUID().toString().replaceAll("-", "")}.xml"
+                    def newLayoutFile = new File(layoutDir, newLayoutFileName)
+                    file.renameTo(newLayoutFile)
+
+                    updateReferencesInFiles(javaDir, file.name.substring(0, file.name.lastIndexOf('.')), newLayoutFileName.substring(0, newLayoutFileName.lastIndexOf('.')))
+                    updateReferencesInFiles(layoutDir, file.name.substring(0, file.name.lastIndexOf('.')), newLayoutFileName.substring(0, newLayoutFileName.lastIndexOf('.')))
+                }
+            }
+
+            drawableDir.eachFile { file ->
+                if (file.isFile() && !file.name.equals("icon.png")) {
+                    def newDrawableFileName = "d${UUID.randomUUID().toString().replaceAll("-", "")}${file.name.substring(file.name.lastIndexOf('.'))}"
+                    def newDrawableFile = new File(drawableDir, newDrawableFileName)
+                    file.renameTo(newDrawableFile)
+
+                    updateReferencesInFiles(drawableDir, file.name.substring(0, file.name.lastIndexOf('.')), newDrawableFileName.substring(0, newDrawableFileName.lastIndexOf('.')))
+                    updateReferencesInFiles(javaDir, file.name.substring(0, file.name.lastIndexOf('.')), newDrawableFileName.substring(0, newDrawableFileName.lastIndexOf('.')))
+                    updateReferencesInFiles(layoutDir, file.name.substring(0, file.name.lastIndexOf('.')), newDrawableFileName.substring(0, newDrawableFileName.lastIndexOf('.')))
+                }
+            }
+            modifyMD5Files(drawableDir)
+        }
+    }
+}
+
+//修改引用
+def updateReferencesInFiles(File dir, String oldReference, String newReference) {
+    def fileList = fileTree(dir: dir).toList()
+    fileList.each { file ->
+        if (file.isFile()) {
+            def content = file.text
+            content = content.replaceAll(oldReference, newReference)
+            file.text = content
+        }
+    }
+}
+
+def modifyMD5Files(File directory) {
+    File[] files = directory.listFiles()
+    if (files == null) {
+        return
+    }
+
+    for (File file : files) {
+        if (file.isFile() && !file.name.endsWith(".xml")&& !file.name.equals("icon.png")) {
+            String fileName = file.getName().toLowerCase();
+            modifyMD5File(file)
+        }
+    }
+}
+
+def modifyMD5File(File file) {
+    try {
+        String content = UUID.randomUUID().toString();
+        FileWriter writer = new FileWriter(file, true); // true 表示追加写入
+        writer.write(content);
+        writer.close();
+        println("Modified content of file: " + file.getName());
+    } catch (IOException e) {
+        e.printStackTrace();
+    }
+}
+
+preBuild.dependsOn renameLayoutsAndDrawables
